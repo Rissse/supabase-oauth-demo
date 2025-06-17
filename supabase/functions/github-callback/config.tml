@@ -16,3 +16,6 @@ secure_password_change = false
 max_frequency = "1m0s"
 otp_length = 6
 otp_expiry = 3600
+
+[functions."github-callback"]
+verify_jwt = false

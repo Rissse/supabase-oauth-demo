@@ -20,20 +20,24 @@ async function exchangeCodeForToken(code: string): Promise<string> {
   const clientId = Deno.env.get("GITHUB_CLIENT_ID");
   const clientSecret = Deno.env.get("GITHUB_CLIENT_SECRET");
 
-  console.log("DEBUG: CLIENT_ID", clientId);
-  console.log("DEBUG: CLIENT_SECRET is present?", !!clientSecret);
+  if (!clientId || !clientSecret) {
+    throw new Error("Missing GitHub Client ID or Secret in environment variables.");
+  }
 
-  const response = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    // redirect_uri is intentionally omitted
+  });
+
+  const response = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'application/json',
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
     },
-    body: new URLSearchParams({
-      client_id: clientId!,
-      client_secret: clientSecret!,
-      code,
-    }),
+    body: params,
   });
 
   const data = await response.json();
@@ -64,19 +68,20 @@ async function fetchGitHubUser(accessToken: string): Promise<GitHubUser> {
 }
 
 async function fetchUserCommits(accessToken: string, username: string): Promise<Array<{repo: string, message: string, date: string, url: string}>> {
-  // Fetch the user's public events (push events contain commits)
-  const eventsRes = await fetch(`https://api.github.com/users/${username}/events/public`, {
+  const eventsRes = await fetch('https://api.github.com/user/events', {
     headers: {
       'Authorization': `Bearer ${accessToken}`,
       'Accept': 'application/vnd.github.v3+json',
     },
   });
+
   if (!eventsRes.ok) {
     throw new Error('Failed to fetch user events');
   }
+
   const events = await eventsRes.json();
   console.log("Fetched events:", JSON.stringify(events, null, 2));
-  // Filter for PushEvent and extract commit messages and dates
+
   const commits: Array<{repo: string, message: string, date: string, url: string}> = [];
   for (const event of events) {
     if (event.type === 'PushEvent' && event.payload?.commits) {
@@ -92,6 +97,7 @@ async function fetchUserCommits(accessToken: string, username: string): Promise<
       }
     }
   }
+
   console.log("Filtered commits:", JSON.stringify(commits, null, 2));
   return commits;
 }
@@ -124,7 +130,6 @@ serve(async (req) => {
       console.error('Failed to fetch commits:', e);
     }
 
-    // Store user and commits in Supabase
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -138,13 +143,13 @@ serve(async (req) => {
     });
 
     for (const commit of commits) {
-      await supabase.from('github_commits').insert({
+      await supabase.from('github_commits').upsert({
         user_id: userData.id,
         repo: commit.repo,
         message: commit.message,
         date: commit.date,
         url: commit.url,
-      });
+      }, { onConflict: 'user_id,url' });
     }
 
     return new Response(
@@ -159,7 +164,7 @@ serve(async (req) => {
     );
   } catch (error) {
     console.error("OAuth Error:", error);
-  
+
     return new Response(
       JSON.stringify({ error: error.message, stack: error.stack }),
       {
